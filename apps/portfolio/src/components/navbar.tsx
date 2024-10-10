@@ -6,7 +6,7 @@ import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@/components/ui/tooltip";
+} from "@repo/ui/components/ui/tooltip";
 import { DATA } from "@/data/resume";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
@@ -43,14 +43,16 @@ export default function Navbar() {
             <DockIcon key={name}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Link
+                  <Link  passHref legacyBehavior
                     href={social.url}
                     className={cn(
                       buttonVariants({ variant: "ghost", size: "icon" }),
                       "size-12"
                     )}
                   >
-                    <social.icon className="size-4" />
+                    <a target="_blank">
+                      <social.icon className="size-4" />
+                    </a>
                   </Link>
                 </TooltipTrigger>
                 <TooltipContent>
