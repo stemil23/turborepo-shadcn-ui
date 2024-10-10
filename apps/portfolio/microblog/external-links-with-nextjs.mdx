@@ -1,0 +1,21 @@
+---
+title: "Next Link with external links"
+publishedAt: "2024-10-09"
+summary: "My first post on my new blog."
+---
+
+To use Next Link with external links, you can use the `legacyBehavior` prop.
+
+```jsx
+                  <Link  passHref legacyBehavior
+                    href={social.url}
+                    className={cn(
+                      buttonVariants({ variant: "ghost", size: "icon" }),
+                      "size-12"
+                    )}
+                  >
+                    <a target="_blank">
+                      <social.icon className="size-4" />
+                    </a>
+                  </Link>
+```
