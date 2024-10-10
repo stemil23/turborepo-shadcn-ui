@@ -1,0 +1,190 @@
+---
+title: "An improved approach to managing your data using EdgeDB for core operations, D2 (Durable Object) for persistent storage, and Cloudflare KV for caching"
+publishedAt: "2024-06-18"
+summary: "Managing a design system that serves various projects while being maintained separately from application development teams can be challenging."
+---  
+
+This guide outlines an improved approach to managing your data using EdgeDB for core operations, D2 (Durable Object) for persistent storage, and Cloudflare KV for caching in your Hono app deployed on Cloudflare Workers. The enhancements focus on automating cache invalidation, optimizing sync processes, and managing costs effectively.
+
+### **1. Architectural Overview**
+
+- **EdgeDB Cloud**: The primary database for handling complex queries, relationships, and all create, update, and delete operations.
+- **D2 Database**: Used for storing structured data persistently, ensuring availability and consistency across sessions.
+- **Cloudflare KV**: A globally distributed cache for fast access to frequently requested data, with automated invalidation strategies to ensure data freshness and cost-effectiveness.
+- **Hono on Cloudflare Workers**: The intermediary that processes requests, handles business logic, and interacts with both D2 and KV as needed.
+
+### **2. Write, Update, Delete Operations in EdgeDB and D2**
+
+All data write operations, including creating, updating, and deleting records, are performed in EdgeDB and stored in D2 for persistence. KV is then used to cache this data, with automated invalidation mechanisms to maintain consistency.
+
+#### **2.1. Writing Data to EdgeDB and Storing in D2**
+
+1. **Create Operation**:
+   - Data is first written to EdgeDB. After successful storage, it’s saved in D2 for persistence and optionally cached in KV.
+
+   **Example**:
+   ```typescript
+   import { createHttpClient } from 'edgedb';
+
+   const client = createHttpClient({
+     endpoint: process.env.EDGEDB_ENDPOINT,
+     secretKey: process.env.EDGEDB_SECRET_KEY,
+   });
+
+   async function createUser(name: string, email: string, env: any): Promise<void> {
+     // Write to EdgeDB
+     await client.query(`
+       INSERT User {
+         name := <str>$name,
+         email := <str>$email
+       }
+     `, { name, email });
+
+     // Store in D2
+     const d2Object = env.DURABLE_OBJECT.get('user-data');
+     await d2Object.put(`user:${email}`, { name, email });
+
+     // Update KV cache with TTL for automated expiration
+     await env.KV_CACHE.put(`user:${email}`, JSON.stringify({ name, email }), { expirationTtl: 3600 });
+   }
+   ```
+
+#### **2.2. Updating Data in EdgeDB and D2 with Automated KV Invalidation**
+
+2. **Update Operation**:
+   - When updating data in EdgeDB, update D2 and automate cache invalidation in KV to keep data fresh.
+
+   **Example**:
+   ```typescript
+   async function updateUser(userId: string, name: string, email: string, env: any): Promise<void> {
+     // Update in EdgeDB
+     await client.query(`
+       UPDATE User
+       FILTER .id = <uuid>$userId
+       SET {
+         name := <str>$name,
+         email := <str>$email
+       }
+     `, { userId, name, email });
+
+     // Update in D2
+     const d2Object = env.DURABLE_OBJECT.get('user-data');
+     await d2Object.put(`user:${userId}`, { name, email });
+
+     // Invalidate or update KV cache with TTL
+     await env.KV_CACHE.delete(`user:${email}`);
+     await env.KV_CACHE.put(`user:${email}`, JSON.stringify({ name, email }), { expirationTtl: 3600 });
+   }
+   ```
+
+#### **2.3. Deleting Data from EdgeDB and D2 with KV Invalidation**
+
+3. **Delete Operation**:
+   - Delete data from EdgeDB and D2, ensuring the KV cache is invalidated immediately to prevent stale data.
+
+   **Example**:
+   ```typescript
+   async function deleteUser(userId: string, email: string, env: any): Promise<void> {
+     // Delete from EdgeDB
+     await client.query(`
+       DELETE User
+       FILTER .id = <uuid>$userId
+     `, { userId });
+
+     // Remove from D2
+     const d2Object = env.DURABLE_OBJECT.get('user-data');
+     await d2Object.delete(`user:${email}`);
+
+     // Remove from KV cache
+     await env.KV_CACHE.delete(`user:${email}`);
+   }
+   ```
+
+### **3. Reading Data from KV with D2 Fallback**
+
+For read operations, data is first retrieved from KV. If not present, fallback to D2, update the KV cache, and then serve the data. This ensures fast access while maintaining consistency.
+
+#### **3.1. Serving Data from KV with D2 Fallback**
+
+1. **Read Operation**:
+   - Attempt to read from KV. If not found, read from D2, update KV, and serve the data.
+
+   **Example**:
+   ```typescript
+   async function getUserData(userId: string, env: any): Promise<any> {
+     // Attempt to read from KV cache
+     let userData = await env.KV_CACHE.get(`user:${userId}`);
+     
+     if (!userData) {
+       // Fallback: Read from D2
+       const d2Object = env.DURABLE_OBJECT.get('user-data');
+       userData = await d2Object.get(`user:${userId}`);
+       
+       // Update KV cache with data from D2 and set TTL for cache expiry
+       await env.KV_CACHE.put(`user:${userId}`, JSON.stringify(userData), { expirationTtl: 3600 });
+     } else {
+       userData = JSON.parse(userData);
+     }
+
+     return userData;
+   }
+   ```
+
+### **4. Automated Cache Invalidation and Cost Management**
+
+#### **4.1. TTL-Based Cache Expiry**
+
+- **Set TTL on KV Entries**:
+  - To manage cache size and costs, set a TTL (time-to-live) on KV entries. This automatically expires data, ensuring that stale data is not served and that storage costs are kept in check.
+
+  **Example**:
+  ```typescript
+  await env.KV_CACHE.put(`user:${userId}`, JSON.stringify(userData), { expirationTtl: 3600 }); // 1-hour TTL
+  ```
+
+#### **4.2. Event-Driven Invalidation**
+
+- **Automate Cache Invalidation**:
+  - Implement event-driven cache invalidation for scenarios where data changes are triggered by specific events. This ensures that related cache entries are invalidated immediately, maintaining consistency across the system.
+
+  **Example**:
+  ```typescript
+  // Event handler for when a user profile is updated
+  eventBus.on('UserUpdated', async (userId: string, updatedData: any, env: any) => {
+    await env.KV_CACHE.delete(`user:${userId}`);
+    await env.KV_CACHE.put(`user:${userId}`, JSON.stringify(updatedData), { expirationTtl: 3600 });
+  });
+  ```
+
+### **5. Data Integrity and Sync Management**
+
+#### **5.1. Data Sync Between EdgeDB and D2**
+
+- **Implement Robust Syncing**:
+  - Ensure that data syncs between EdgeDB and D2 are managed with robust error handling. Consider using versioning or batching updates to handle high volumes of data changes efficiently.
+
+  **Example**:
+  ```typescript
+  async function syncEdgeDBToD2(env: any): Promise<void> {
+    try {
+      const users = await client.query(`SELECT User { name, email }`);
+      const d2Object = env.DURABLE_OBJECT.get('user-data');
+
+      for (const user of users) {
+        await d2Object.put(`user:${user.email}`, user);
+      }
+    } catch (error) {
+      console.error('Error syncing data from EdgeDB to D2:', error);
+    }
+  }
+  ```
+
+### **6. Conclusion**
+
+The updated workflow enhances the original architecture by introducing automated cache invalidation, TTL-based cost management, and robust data sync strategies. These improvements ensure that your application remains performant, scalable, and consistent while keeping operational costs under control:
+
+- **EdgeDB** handles complex queries and maintains data integrity.
+- **D2** provides persistent storage with structured data management.
+- **KV** serves as a fast-access cache with automated expiration and event-driven invalidation to keep the system responsive and up-to-date.
+
+This approach ensures a high-performance, scalable system that can handle modern web application demands while maintaining data accuracy and minimizing latency.

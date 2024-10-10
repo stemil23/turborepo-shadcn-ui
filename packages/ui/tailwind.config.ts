@@ -114,9 +114,9 @@ const config = {
   			rainbow: 'rainbow var(--speed, 2s) infinite linear',
   			grid: 'grid 15s linear infinite'
   		}
-  	}
+    },
   },
-  plugins: [tailwindcssAnimate],
+  plugins: [tailwindcssAnimate, require("@tailwindcss/typography")],
 } satisfies Config;
 
 export default config;
